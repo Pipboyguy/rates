@@ -2,6 +2,7 @@ use std::fs::{create_dir_all, read_to_string, write};
 
 use chrono::prelude::*;
 use clap::{CommandFactory, Parser, error::ErrorKind};
+use colored::Colorize;
 use directories::ProjectDirs;
 
 fn get_rate(from: &str, to: &str, fiat_list: &str) -> f64 {
@@ -180,6 +181,13 @@ fn main() {
     if args.short {
         println!("{}", to_val);
     } else {
-        println!("{} {} = {} {}", amount, from, to_val, to);
+        println!(
+            "{} {} {} {} {}",
+            amount.to_string().bold(),
+            from.cyan(),
+            "=".dimmed(),
+            to_val.to_string().bold().green(),
+            to.cyan()
+        );
     };
 }
