@@ -14,9 +14,10 @@ fn get_rate(from: &str, to: &str, fiat_list: &str) -> f64 {
         if code == "USD" {
             1.0
         } else {
-            rates[code]
-                .as_f64()
-                .unwrap_or_else(|| panic!("Currency \"{}\" is not available.", code))
+            rates[code].as_f64().unwrap_or_else(|| {
+                eprintln!("Error: currency \"{}\" is not available.", code);
+                std::process::exit(1);
+            })
         }
     };
 
