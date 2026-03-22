@@ -171,10 +171,10 @@ fn init_currency_data(force_cache_update: bool) -> (String, String) {
 #[derive(Debug, Parser)]
 #[command(name = "rates", about = "Get financial data in your terminal")]
 struct Args {
-    /// (Optional) Amount
-    arg1: Option<String>,
+    /// Amount or currency to convert from
+    arg1: String,
 
-    /// Currency to convert from
+    /// Currency to convert from (or target currency)
     arg2: Option<String>,
 
     /// (Optional) "to"
@@ -208,23 +208,19 @@ struct ParsedArgs {
 }
 
 fn parse_args(args: &Args) -> ParsedArgs {
-    let arg1 = args.arg1.clone();
+    let arg1 = &args.arg1;
     let arg2 = args.arg2.clone();
     let arg3 = args.arg3.clone();
     let arg4 = args.arg4.clone();
 
-    if arg1.is_none() {
-        panic!("At least one argument to convert from is required");
-    }
-
-    let is_arg1_num = arg1.clone().unwrap().parse::<f64>().is_ok();
+    let is_arg1_num = arg1.parse::<f64>().is_ok();
 
     let amount: f64;
     let from: String;
     let to: String;
 
     if is_arg1_num {
-        amount = arg1.unwrap().parse::<f64>().unwrap();
+        amount = arg1.parse::<f64>().unwrap();
 
         from = arg2.unwrap().to_uppercase();
 
@@ -244,11 +240,7 @@ fn parse_args(args: &Args) -> ParsedArgs {
     } else {
         amount = 1.0;
 
-        from = if let Some(arg) = arg1 {
-            arg.to_uppercase()
-        } else {
-            panic!("At least one argument to convert from is expected");
-        };
+        from = arg1.to_uppercase();
 
         to = match arg2 {
             Some(arg) => {
