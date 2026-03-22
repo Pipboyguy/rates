@@ -3,7 +3,7 @@ use std::fs::{create_dir_all, read_to_string, write};
 use chrono::prelude::*;
 use directories::ProjectDirs;
 use quickxml_to_serde::{xml_string_to_json, Config};
-use structopt::StructOpt;
+use clap::Parser;
 
 fn get_rate(from: &str, to: &str, crypto_list: String, fiat_list: String) -> f64 {
     let fiat_json: serde_json::Value =
@@ -168,8 +168,8 @@ fn init_currency_data(force_cache_update: bool) -> (String, String) {
     (crypto_list, fiat_list)
 }
 
-#[derive(Debug, StructOpt)]
-#[structopt(name = "rates", about = "Get financial data in your terminal")]
+#[derive(Debug, Parser)]
+#[command(name = "rates", about = "Get financial data in your terminal")]
 struct Args {
     /// (Optional) Amount
     arg1: Option<String>,
@@ -184,19 +184,19 @@ struct Args {
     arg4: Option<String>,
 
     /// Show only the result
-    #[structopt(short = "s", long = "short")]
+    #[arg(short = 's', long = "short")]
     short: bool,
 
     /// Trim the digits after decimal point, if any
-    #[structopt(short = "t", long = "trim")]
+    #[arg(short = 't', long = "trim")]
     trim: bool,
 
     /// Do not format the result
-    #[structopt(short = "F", long = "noformatting")]
+    #[arg(short = 'F', long = "noformatting")]
     no_formatting: bool,
 
     /// Forcefully update currency data
-    #[structopt(short = "f", long = "force")]
+    #[arg(short = 'f', long = "force")]
     force_cache_update: bool,
 }
 
@@ -269,7 +269,7 @@ fn parse_args(args: &Args) -> ParsedArgs {
 }
 
 fn main() {
-    let args = Args::from_args();
+    let args = Args::parse();
     let ParsedArgs { from, to, amount } = parse_args(&args);
 
     let short = args.short;
