@@ -1,102 +1,65 @@
 use std::fs::{create_dir_all, read_to_string, write};
 
 use chrono::prelude::*;
+use clap::{CommandFactory, Parser, error::ErrorKind};
 use directories::ProjectDirs;
-use quickxml_to_serde::{xml_string_to_json, Config};
-use clap::Parser;
 
-fn get_rate(from: &str, to: &str, crypto_list: String, fiat_list: String) -> f64 {
-    let fiat_json: serde_json::Value =
-        serde_json::from_str(&fiat_list).expect("The result doesn't seem to be JSON");
-    let crypto_json: serde_json::Value =
-        serde_json::from_str(&crypto_list).expect("The result doesn't seem to be JSON");
+fn get_rate(from: &str, to: &str, fiat_list: &str) -> f64 {
+    let json: serde_json::Value =
+        serde_json::from_str(fiat_list).expect("The result doesn't seem to be JSON");
+    let rates = &json["rates"];
 
-    let fiat_object = fiat_json["Envelope"]["Cube"]["Cube"]["Cube"]
-        .as_array()
-        .unwrap();
-
-    let crypto_array = crypto_json["data"]["coins"].as_array().unwrap();
-
-    let eur_to_usd_rate = fiat_object[fiat_object
-        .iter()
-        .position(|x| x.as_object().unwrap()["@currency"] == *"USD")
-        .unwrap()]["@rate"]
-        .to_string()
-        .parse::<f64>()
-        .unwrap();
-
-    let from_val = if *from == *"EUR" {
-        eur_to_usd_rate
-    } else if fiat_object
-        .iter()
-        .any(|x| x.as_object().unwrap()["@currency"] == *from)
-    {
-        let f = fiat_object[fiat_object
-            .iter()
-            .position(|x| x.as_object().unwrap()["@currency"] == *from)
-            .unwrap()]["@rate"]
-            .to_string();
-
-        1.0 / f.parse::<f64>().unwrap() * eur_to_usd_rate
-    } else if crypto_array
-        .iter()
-        .any(|x| x.as_object().unwrap()["symbol"] == *from)
-    {
-        let mut c = crypto_array[crypto_array
-            .iter()
-            .position(|x| x.as_object().unwrap()["symbol"] == *from)
-            .unwrap()]["price"]
-            .to_string();
-
-        c.pop();
-        c[1..c.len()].parse::<f64>().unwrap()
-    } else {
-        panic!(
-            "The currency symbol \"{}\" is incorrect or not available.",
-            from
-        )
+    let lookup = |code: &str| -> f64 {
+        if code == "USD" {
+            1.0
+        } else {
+            rates[code]
+                .as_f64()
+                .unwrap_or_else(|| panic!("Currency \"{}\" is not available.", code))
+        }
     };
 
-    let to_val = if *to == *"EUR" {
-        eur_to_usd_rate
-    } else if fiat_object
-        .iter()
-        .any(|x| x.as_object().unwrap()["@currency"] == *to)
-    {
-        let f = fiat_object[fiat_object
-            .iter()
-            .position(|x| x.as_object().unwrap()["@currency"] == *to)
-            .unwrap()]["@rate"]
-            .to_string()
-            .parse::<f64>()
-            .unwrap();
-
-        1.0 / f * eur_to_usd_rate
-    } else if crypto_array
-        .iter()
-        .any(|x| x.as_object().unwrap()["symbol"] == *to)
-    {
-        let mut c = crypto_array[crypto_array
-            .iter()
-            .position(|x| x.as_object().unwrap()["symbol"] == *to)
-            .unwrap()]["price"]
-            .to_string();
-
-        c.pop();
-        c[1..c.len()].parse::<f64>().unwrap()
-    } else {
-        panic!(
-            "The currency symbol \"{}\" is incorrect or not available.",
-            to
-        )
-    };
-
-    from_val / to_val
+    lookup(to) / lookup(from)
 }
 
-fn read_cache(path: &str) -> Result<String, std::io::Error> {
+fn fetch_data(url: &str) -> Result<String, reqwest::Error> {
+    let body = reqwest::blocking::get(url)?.text()?;
+    Ok(body)
+}
+
+fn init_currency_data(force_cache_update: bool) -> String {
+    let proj_dirs = ProjectDirs::from("rs", "Lunush", "Rates").unwrap();
+    let cache_dir = proj_dirs.cache_dir().to_str().unwrap().to_owned();
+    let fiat_list_path = format!("{}/fiat_list.json", cache_dir);
+    let last_update_path = format!("{}/last_update", cache_dir);
+
+    if let Err(why) = create_dir_all(&cache_dir) {
+        panic!("Unable to create {} folder:\n\n{}", cache_dir, why);
+    };
+
+    let now = Utc::now().timestamp();
+    let needs_update = force_cache_update
+        || match read_to_string(&last_update_path) {
+            Ok(time) => {
+                let last_update_time = time.parse::<i64>().unwrap();
+                last_update_time + 3600 * 3 < now
+            }
+            Err(_) => true,
+        };
+
+    if needs_update {
+        let fiat_list = fetch_data("https://open.er-api.com/v6/latest/USD").unwrap();
+        cache_data(&fiat_list_path, &fiat_list);
+        cache_data(&last_update_path, &now.to_string());
+        fiat_list
+    } else {
+        read_cache(&fiat_list_path)
+    }
+}
+
+fn read_cache(path: &str) -> String {
     match read_to_string(path) {
-        Ok(str) => Ok(str),
+        Ok(str) => str,
         Err(why) => panic!("An error occured while reading the cache: {}", why),
     }
 }
@@ -108,79 +71,27 @@ fn cache_data(path: &str, data: &str) {
     }
 }
 
-fn fetch_data(url: &str) -> Result<String, reqwest::Error> {
-    let body = reqwest::blocking::get(url)?.text()?;
-
-    Ok(body)
-}
-
-fn get_fiat_currency_json() -> Result<String, reqwest::Error> {
-    let xml = fetch_data("https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml").unwrap();
-    let json = xml_string_to_json(xml, &Config::new_with_defaults()).unwrap();
-
-    Ok(serde_json::to_string(&json).unwrap())
-}
-
-fn init_currency_data(force_cache_update: bool) -> (String, String) {
-    let proj_dirs = ProjectDirs::from("rs", "Lunush", "Rates").unwrap();
-    let cache_dir = proj_dirs.cache_dir().to_str().unwrap().to_owned();
-    let crypto_list_path = format!("{}/crypto_list.json", cache_dir)[..].to_owned();
-    let fiat_list_path = format!("{}/fiat_list.json", cache_dir)[..].to_owned();
-    let last_update_path = format!("{}/last_update", cache_dir)[..].to_owned();
-
-    if let Err(why) = create_dir_all(&cache_dir) {
-        panic!("Unable to create {} folder:\n\n{}", cache_dir, why);
-    };
-
-    // If last_update file does not exist or was updated >3 hours ago, pull the data. Otherwise use
-    // cache.
-    let crypto_list: String;
-    let fiat_list: String;
-
-    let now = Utc::now().timestamp();
-    match read_to_string(&last_update_path) {
-        Ok(time) => {
-            let last_update_time = time.parse::<i64>().unwrap();
-            const HOUR: i64 = 3600;
-
-            if force_cache_update || last_update_time + HOUR * 3 < now {
-                crypto_list = fetch_data("https://api.coinranking.com/v2/coins").unwrap();
-                fiat_list = get_fiat_currency_json().unwrap();
-
-                cache_data(&crypto_list_path, &crypto_list);
-                cache_data(&fiat_list_path, &fiat_list);
-                cache_data(&last_update_path, &now.to_string());
-            } else {
-                crypto_list = read_cache(&crypto_list_path).unwrap();
-                fiat_list = read_cache(&fiat_list_path).unwrap();
-            }
-        }
-        Err(_) => {
-            crypto_list = fetch_data("https://api.coinranking.com/v2/coins").unwrap();
-            fiat_list = get_fiat_currency_json().unwrap();
-
-            cache_data(&crypto_list_path, &crypto_list);
-            cache_data(&fiat_list_path, &fiat_list);
-            cache_data(&last_update_path, &now.to_string());
-        }
-    };
-
-    (crypto_list, fiat_list)
-}
-
 #[derive(Debug, Parser)]
-#[command(name = "rates", about = "Get financial data in your terminal")]
+#[command(
+    name = "rates",
+    about = "Currency exchange rates in your terminal",
+    after_help = "EXAMPLES:\n  rates USD ZAR          1 USD in ZAR\n  rates 100 USD ZAR      100 USD in ZAR\n  rates EUR to GBP       1 EUR in GBP\n  rates -s USD ZAR       number only"
+)]
 struct Args {
-    /// Amount or currency to convert from
+    /// Amount (e.g. 100) or source currency (e.g. USD)
+    #[arg(value_name = "AMOUNT|FROM")]
     arg1: String,
 
-    /// Currency to convert from (or target currency)
+    /// Source currency if amount given, or target currency
+    #[arg(value_name = "FROM|TO")]
     arg2: Option<String>,
 
-    /// (Optional) "to"
+    /// Target currency or the word "to"
+    #[arg(value_name = "TO")]
     arg3: Option<String>,
 
-    /// Currency to convert to. Defaults to EUR if not provided
+    /// Target currency (when using "to" syntax)
+    #[arg(value_name = "TO")]
     arg4: Option<String>,
 
     /// Show only the result
@@ -200,98 +111,56 @@ struct Args {
     force_cache_update: bool,
 }
 
-#[derive(Debug)]
-struct ParsedArgs {
-    from: String,
-    to: String,
-    amount: f64,
-}
-
-fn parse_args(args: &Args) -> ParsedArgs {
+fn parse_args(args: &Args) -> (String, String, f64) {
     let arg1 = &args.arg1;
     let arg2 = args.arg2.clone();
     let arg3 = args.arg3.clone();
     let arg4 = args.arg4.clone();
 
-    let is_arg1_num = arg1.parse::<f64>().is_ok();
-
-    let amount: f64;
-    let from: String;
-    let to: String;
-
-    if is_arg1_num {
-        amount = arg1.parse::<f64>().unwrap();
-
-        from = arg2.unwrap().to_uppercase();
-
-        to = match arg3 {
-            Some(arg) => {
-                if arg == *"to" {
-                    match arg4 {
-                        Some(last_arg) => last_arg.to_uppercase(),
-                        None => "EUR".to_owned(),
-                    }
-                } else {
-                    arg.to_uppercase()
-                }
-            }
-            None => "EUR".to_owned(),
-        }
+    if let Ok(amount) = arg1.parse::<f64>() {
+        let from = arg2
+            .unwrap_or_else(|| {
+                Args::command()
+                    .error(
+                        ErrorKind::MissingRequiredArgument,
+                        "currency code required after amount (e.g. rates 100 USD ZAR)",
+                    )
+                    .exit()
+            })
+            .to_uppercase();
+        let to = match arg3 {
+            Some(arg) if arg == "to" => arg4.map(|a| a.to_uppercase()).unwrap_or("EUR".into()),
+            Some(arg) => arg.to_uppercase(),
+            None => "EUR".into(),
+        };
+        (from, to, amount)
     } else {
-        amount = 1.0;
-
-        from = arg1.to_uppercase();
-
-        to = match arg2 {
-            Some(arg) => {
-                if arg == *"to" {
-                    match arg3 {
-                        Some(last_arg) => last_arg.to_uppercase(),
-                        None => "EUR".to_owned(),
-                    }
-                } else {
-                    arg.to_uppercase()
-                }
-            }
-            None => "EUR".to_owned(),
-        }
+        let from = arg1.to_uppercase();
+        let to = match arg2 {
+            Some(arg) if arg == "to" => arg3.map(|a| a.to_uppercase()).unwrap_or("EUR".into()),
+            Some(arg) => arg.to_uppercase(),
+            None => "EUR".into(),
+        };
+        (from, to, 1.0)
     }
-
-    ParsedArgs { from, to, amount }
 }
 
 fn main() {
     let args = Args::parse();
-    let ParsedArgs { from, to, amount } = parse_args(&args);
+    let (from, to, amount) = parse_args(&args);
+    let fiat_list = init_currency_data(args.force_cache_update);
 
-    let short = args.short;
-    let trim = args.trim;
-    let no_formatting = args.no_formatting;
-    let force_cache_update = args.force_cache_update;
-    let (crypto_list, fiat_list) = init_currency_data(force_cache_update);
-
-    let mut to_val = amount * get_rate(&from, &to, crypto_list, fiat_list);
+    let mut to_val = amount * get_rate(&from, &to, &fiat_list);
 
     let digits = to_val.to_string().chars().collect::<Vec<_>>();
-    
-    // If trim set to true, trim all decimals. Show some decimals otherwise.
-    if trim {
-        to_val = to_val.floor();
-    } else if !no_formatting && digits.len() > 3 {
-        // 2 decimals if to_val > 1
-        // 3 decimals if to_val > .1
-        // 4 decimals if to_val > .01
-        // etc
-        let mut decimal_length = 3;
 
-        // Find the decimal point index
+    if args.trim {
+        to_val = to_val.floor();
+    } else if !args.no_formatting && digits.len() > 3 {
+        let mut decimal_length = 3;
         let decimal_point_index = digits.iter().position(|x| *x == '.').unwrap_or(0);
 
-        // If to_val < 1, search for the first 0 and when found trim the rest - 2.
-        if to_val < 1.0
-            && decimal_point_index != 0
-            // && digits[decimal_point_index + 1].to_digit(10).unwrap() == 0
-        {
+        if to_val < 1.0 && decimal_point_index != 0 {
             for digit in digits.iter().skip(decimal_point_index + 1) {
                 if *digit != '0' {
                     break;
@@ -300,21 +169,15 @@ fn main() {
             }
         }
 
-        let to_val_prettified_length = decimal_point_index + decimal_length;
-        let to_val_length = if  to_val_prettified_length > digits.len() {
-            digits.len()
-        } else {
-            to_val_prettified_length
-        };
-
-        to_val = digits[0..to_val_length]
+        let len = (decimal_point_index + decimal_length).min(digits.len());
+        to_val = digits[0..len]
             .iter()
             .collect::<String>()
             .parse::<f64>()
             .unwrap();
     }
 
-    if short {
+    if args.short {
         println!("{}", to_val);
     } else {
         println!("{} {} = {} {}", amount, from, to_val, to);
